@@ -1,0 +1,4 @@
+<launch>
+ <node name="node_talker" pkg="rospy_tutorials" type="talker" output="screen"/>
+ <node name="node_listener" pkg="rospy_tutorials" type="listener" output="screen"/>
+</launch>

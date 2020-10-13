@@ -1,0 +1,10 @@
+# Comment: my_config.yaml Configuration
+details:
+  name:
+    first: "Raj"  
+    last: "Krishnan"
+  
+  contact:
+    address: "Lucknow"  
+    phone: 6666   
+

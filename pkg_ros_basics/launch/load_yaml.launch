@@ -1,0 +1,4 @@
+<launch>
+ <rosparam file="$(find pkg_ros_basics)/config/config_my.yaml"/>
+ <node name="node_param_get_set" pkg="pkg_ros_basics" type="node_param_get_set.py" output="screen"/>
+</launch>
