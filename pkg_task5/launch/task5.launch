@@ -1,0 +1,10 @@
+<launch>
+<!--  <node pkg="pkg_task5" type="shell_webpages_launch.sh" name="shell_webpages_launch" output="screen">
+    <param name="cmd" value="$(find pkg_task5)/launch/shell_webpages_launch.sh"/>
+ </node>
+ -->
+
+ <rosparam command="load" file="$(find pkg_ros_iot_bridge)/config/config_pyiot.yaml"/>
+ <node name="node_action_server_ros_iot_bridge" pkg="pkg_ros_iot_bridge" type="node_action_server_ros_iot_bridge.py" output="screen"/>
+ <node name="node_detect_pkgs" pkg="pkg_task5" type="order_recive.py" output="screen"/>
+</launch>

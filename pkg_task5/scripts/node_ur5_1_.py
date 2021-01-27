@@ -1,0 +1,289 @@
+#! /usr/bin/env python
+
+import rospy
+import moveit_commander
+import moveit_msgs.msg
+import geometry_msgs.msg
+import actionlib
+import rospkg
+
+import yaml
+import os
+import math
+import time
+import sys
+import copy
+
+from std_srvs.srv import Empty
+from pkg_vb_sim.srv import *
+from pkg_vb_sim.msg import *
+from pkg_task5.msg import color
+
+global sorted_pkgs
+global color_sub
+global color_matrix
+global hashmap
+sorted_pkgs = {}
+hashmap = {}
+color_matrix = []
+
+class Ur5Moveit:
+
+    # Constructor
+    def __init__(self, arg_robot_name):
+
+        rospy.init_node('node_ur5_1', anonymous=True)
+
+        self._robot_ns = '/'  + arg_robot_name
+        self._planning_group = "manipulator"
+        
+        self._commander = moveit_commander.roscpp_initialize(sys.argv)
+        self._robot = moveit_commander.RobotCommander(robot_description= self._robot_ns + "/robot_description", ns=self._robot_ns)
+        self._scene = moveit_commander.PlanningSceneInterface(ns=self._robot_ns)
+        self._group = moveit_commander.MoveGroupCommander(self._planning_group, robot_description= self._robot_ns + "/robot_description", ns=self._robot_ns)
+        self._display_trajectory_publisher = rospy.Publisher( self._robot_ns + '/move_group/display_planned_path', moveit_msgs.msg.DisplayTrajectory, queue_size=1)
+        self._exectute_trajectory_client = actionlib.SimpleActionClient( self._robot_ns + '/execute_trajectory', moveit_msgs.msg.ExecuteTrajectoryAction)
+        self._exectute_trajectory_client.wait_for_server()
+
+        self._planning_frame = self._group.get_planning_frame()
+        self._eef_link = self._group.get_end_effector_link()
+        self._group_names = self._robot.get_group_names()
+        self._box_name = ''
+
+
+        # Attribute to store computed trajectory by the planner	
+        self._computed_plan = ''
+
+        # Current State of the Robot is needed to add box to planning scene
+        self._curr_state = self._robot.get_current_state()
+
+        rospy.loginfo(
+            '\033[94m' + "Planning Group: {}".format(self._planning_frame) + '\033[0m')
+        rospy.loginfo(
+            '\033[94m' + "End Effector Link: {}".format(self._eef_link) + '\033[0m')
+        rospy.loginfo(
+            '\033[94m' + "Group Names: {}".format(self._group_names) + '\033[0m')
+
+
+        rp = rospkg.RosPack()
+        self._pkg_path = rp.get_path('pkg_task5')
+        # Saved Trajectories file inside pkg_task4/config/ur5_1_trajectories
+        self._file_path = self._pkg_path + '/config/ur5_1_trajectories/'
+        rospy.loginfo( "Package Path: {}".format(self._file_path) )
+
+
+        rospy.loginfo('\033[94m' + " >>> Ur5Moveit init done." + '\033[0m')
+
+        self.vacuum_gripper_state = rospy.ServiceProxy(
+            '/eyrc/vb/ur5/activate_vacuum_gripper/ur5_1', vacuumGripper)
+        self.conveyor_belt_power = rospy.ServiceProxy(
+            "/eyrc/vb/conveyor/set_power", conveyorBeltPowerMsg)
+
+    def clear_octomap(self):
+        clear_octomap_service_proxy = rospy.ServiceProxy(self._robot_ns + "/clear_octomap", Empty)
+        return clear_octomap_service_proxy()
+
+    def set_joint_angles(self, arg_list_joint_angles):
+
+        list_joint_values = self._group.get_current_joint_values()
+
+        self._group.set_joint_value_target(arg_list_joint_angles)
+        self._computed_plan = self._group.plan()
+        flag_plan = self._group.go(wait=True)
+
+        list_joint_values = self._group.get_current_joint_values()
+        # rospy.loginfo('\033[94m' + ">>> Final Joint Values:" + '\033[0m')
+        # rospy.loginfo(list_joint_values)
+
+        pose_values = self._group.get_current_pose().pose
+        # rospy.loginfo('\033[94m' + ">>> Final Pose:" + '\033[0m')
+        # rospy.loginfo(pose_values)
+
+        if (flag_plan == True):
+            pass
+            # rospy.loginfo(
+            #     '\033[94m' + ">>> set_joint_angles() Success" + '\033[0m')
+        else:
+            pass
+            # rospy.logerr(
+            #     '\033[94m' + ">>> set_joint_angles() Failed." + '\033[0m')
+
+        return flag_plan
+
+    def hard_set_joint_angles(self, arg_list_joint_angles, arg_max_attempts):
+
+        number_attempts = 0
+        flag_success = False
+        
+        while ( (number_attempts <= arg_max_attempts) and  (flag_success is False) ):
+            number_attempts += 1
+            flag_success = self.set_joint_angles(arg_list_joint_angles)
+            rospy.logwarn("attempts: {}".format(number_attempts) )
+            # self.clear_octomap()
+
+
+    def moveit_play_planned_path_from_file(self, arg_file_path, arg_file_name):
+        file_path = arg_file_path + arg_file_name
+        
+        with open(file_path, 'r') as file_open:
+            loaded_plan = yaml.load(file_open)
+        
+        ret = self._group.execute(loaded_plan)
+        # rospy.logerr(ret)
+        return ret
+
+    def moveit_hard_play_planned_path_from_file(self, pos1, pos2, arg_max_attempts = 5):
+
+        number_attempts = 0
+        flag_success = False
+        arg_file_path = self._file_path
+        arg_file_name =  pos1 +'_to_'+ pos2 +'.yaml'
+        while ( (number_attempts <= arg_max_attempts) and (flag_success is False) ):
+          number_attempts += 1
+          flag_success = self.moveit_play_planned_path_from_file(arg_file_path, arg_file_name)
+          rospy.logwarn("attempts: {}".format(number_attempts) )
+
+    def reshape(self,the_list, r, c): 
+        # Reshape the 1D list into a m row x n column list
+        if r*c != len(the_list): 
+            raise ValueError('Invalid new shape')  
+        return [the_list[tr*c:(tr+1)*c] for tr in range(0,r)]
+
+
+
+    def color_callback(self,data):
+
+        global color_sub
+        global color_matrix
+        global hashmap
+        global sorted_pkgs
+        color_array = data.array
+        data_pkgs = {'red':'Medicine','yellow':'Food','green':'Clothes'}
+        # The received list from the topic on which the 1D-matrix was received, is reshaped into a 4*3 matrix (4 row 3 columns in shelf) ,
+        # which is converted into a hashmap with pkg_name:color format so UR5_2 can easily search in O(1) time 
+        # the color associated with the pkg_name, which can be used to pick-place in respective color bin.
+        color_matrix = self.reshape(color_array,4,3)
+
+        for i in range(len(color_matrix)):
+
+            for j in range(len(color_matrix[0])):
+
+                        color = color_matrix[i][j]
+                        pkg_type = data_pkgs[color]
+                        if pkg_type not in sorted_pkgs:
+                            sorted_pkgs[pkg_type] = []
+                        sorted_pkgs[pkg_type].append(str(i)+str(j))
+        color_sub.unregister()
+    def pick_place_item(self,item):
+        global sorted_pkgs
+
+        if item in sorted_pkgs:
+            
+            path = 'pose'+sorted_pkgs[item][0]
+            print(item,path)
+            rospy.sleep(10)
+            self.moveit_hard_play_planned_path_from_file('home', path)
+            self.vacuum_gripper_state(True)
+           
+            self.moveit_hard_play_planned_path_from_file(path, 'home') 
+            self.vacuum_gripper_state(False) 
+
+            sorted_pkgs[item].pop(0)
+
+
+    # Destructor
+
+    def __del__(self):
+        moveit_commander.roscpp_shutdown()
+        rospy.loginfo(
+            '\033[94m' + "Object of class Ur5Moveit Deleted." + '\033[0m')
+
+
+def main():
+    global sorted_pkgs
+    global color_sub
+    ur5 = Ur5Moveit(sys.argv[1])
+
+    color_sub = rospy.Subscriber("eyrc/vb/color_data_to_array_data", color, ur5.color_callback,queue_size=10)
+    lst_joint_angles_home = [math.radians(172.160516001),
+                              math.radians(-40.0529267276),
+                              math.radians(58.2606911498),
+                              math.radians(-108.167308562),
+                              math.radians(-89.9478601433),
+                              math.radians(-7.82017669014)]
+
+    ur5.set_joint_angles(lst_joint_angles_home)
+
+    # orders = ['Cloth','Medicine','Food','Food','Cloth','Medicine','Cloth','Medicine','Food']
+
+    # for order in orders:
+
+    #     if order in sorted_pkgs:
+    #         print(sorted_pkgs[order][0])
+    #         sorted_pkgs[order].pop(0)
+
+    count = 0
+    l = [0]*9
+    while(1):
+        low_cost_imdex= -1
+        high_cost_index = -1
+        medium_cost_index = -1
+        order_list = rospy.get_param('order/goal')   # Get only Phone Number from Parameter Server
+        len_order_list = len(order_list)
+        if (len_order_list > count and order_list!="none"):
+            for i in range(len_order_list):
+                if (l[i]==0):
+                    d = order_list[i]
+                    if(d["item"] == "Medicine"):
+                        high_cost_index = i
+                        break
+                    elif(d["item"] == "Food"):
+                        medium_cost_index = i
+                    else:
+                        low_cost_imdex = i
+            if(high_cost_index != -1):
+                l[high_cost_index] = 1
+                order_item = order_list[high_cost_index]["item"]  # pick(order_list[high_cost_index]["item"])
+            elif(medium_cost_index != -1):
+                l[medium_cost_index] = 1
+                order_item = order_list[medium_cost_index]["item"]
+            else:
+                l[low_cost_imdex] = 1
+                order_item = order_list[low_cost_imdex]["item"]
+            print(order_item)
+            ur5.pick_place_item(order_item)
+            count = count+1
+        else:
+            print("wait for order")
+            rospy.sleep(.2)
+   
+
+
+
+    # We modified the function such that we have to only pass the position arguments in form of string ,
+    # # string concatenation is used to play the respective yaml file for playing the trajectory.
+    # ur5.moveit_hard_play_planned_path_from_file('zero', 'pose00')
+    # ur5.vacuum_gripper_state(True)
+    # ur5.moveit_hard_play_planned_path_from_file('pose00', 'home')
+    # ur5.vacuum_gripper_state(False)
+    # # ur5.moveit_hard_play_planned_path_from_file('home', color_detected)
+    
+    # # This list contains the index/name-suffix of all packages that we want to pick via UR5_1, after which corresponding saved trajectory is played.
+    # package = ['01','02','10','11','12', '20','21','22']
+
+    # for i in range(len(package)):
+    #     path = 'pose'+package[i]
+        
+    #     ur5.moveit_hard_play_planned_path_from_file('home', path)
+    #     ur5.vacuum_gripper_state(True)
+       
+    #     ur5.moveit_hard_play_planned_path_from_file(path, 'home') 
+    #     ur5.vacuum_gripper_state(False)    
+
+    del ur5
+
+
+
+if __name__ == '__main__':
+    main()
+

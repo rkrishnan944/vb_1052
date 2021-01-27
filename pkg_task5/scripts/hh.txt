@@ -1,0 +1,1 @@
+{"city": "Agartala", "order_time": "2021-01-27 00:10:31", "order_id": "2003", "lon": "91.2868 E", "qty": "1", "item": "Food", "lat": "23.8315 N"}
